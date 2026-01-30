@@ -25,7 +25,7 @@ from urllib.parse import quote
 # CONFIGURATION
 # =============================================================================
 
-TIMEOUT = 10000  # Timeout en ms pour Playwright
+DEBUG = False  # Mettre True pour voir le navigateur
 SCROLL_PAUSE = 2  # Pause entre chaque scroll (secondes)
 MAX_SCROLLS = 20  # Nombre max de scrolls (plus = plus de résultats)
 
@@ -55,21 +55,41 @@ def rechercher_entreprises(activite: str, localisation: str, max_resultats: int 
     entreprises = []
 
     with sync_playwright() as p:
-        # Lancer le navigateur
-        browser = p.chromium.launch(headless=True)
+        # Lancer le navigateur (DEBUG=True pour voir ce qui se passe)
+        browser = p.chromium.launch(headless=not DEBUG)
         page = browser.new_page()
 
         print(f"🌐 Chargement de Google Maps...")
-        page.goto(url, timeout=30000)
+        page.goto(url, timeout=60000)
 
-        # Accepter les cookies si demandé
+        # Accepter les cookies RGPD (plusieurs variantes FR/EN)
+        cookies_buttons = [
+            "Tout accepter",
+            "Accept all",
+            "Accepter tout",
+            "J'accepte",
+            "Agree",
+        ]
+        for btn_text in cookies_buttons:
+            try:
+                page.click(f"button:has-text('{btn_text}')", timeout=2000)
+                print(f"✓ Cookies acceptés")
+                page.wait_for_timeout(1000)
+                break
+            except:
+                continue
+
+        # Attendre que les résultats chargent (timeout augmenté)
+        print(f"⏳ Attente du chargement des résultats...")
         try:
-            page.click("button:has-text('Tout accepter')", timeout=3000)
+            page.wait_for_selector("div[role='feed']", timeout=30000)
         except:
-            pass  # Pas de popup cookies
-
-        # Attendre que les résultats chargent
-        page.wait_for_selector("div[role='feed']", timeout=10000)
+            # Si toujours pas de feed, prendre un screenshot pour debug
+            print(f"❌ Impossible de charger les résultats")
+            page.screenshot(path="debug_screenshot.png")
+            print(f"📸 Screenshot sauvé: debug_screenshot.png")
+            browser.close()
+            return []
 
         print(f"📜 Scroll pour charger plus de résultats...")
 
