@@ -1,0 +1,13 @@
+# Environnement
+.env
+venv/
+__pycache__/
+*.pyc
+
+# Fichiers générés
+*.xlsx
+leads_*.xlsx
+
+# IDE
+.vscode/
+.idea/

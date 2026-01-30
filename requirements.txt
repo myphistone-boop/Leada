@@ -1,0 +1,12 @@
+# Google Maps API
+googlemaps==4.10.0
+
+# Web scraping et analyse
+requests==2.31.0
+beautifulsoup4==4.12.2
+
+# Export Excel
+openpyxl==3.1.2
+
+# Variables d'environnement
+python-dotenv==1.0.0
