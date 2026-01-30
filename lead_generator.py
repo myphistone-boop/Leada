@@ -1,117 +1,194 @@
 """
 =============================================================================
-GENERATEUR DE LEADS GOOGLE MAPS
+GENERATEUR DE LEADS GOOGLE MAPS (Scraping)
 =============================================================================
-Script pour rechercher des entreprises sur Google Maps, analyser leurs sites
-web et exporter les données dans un fichier Excel.
+Recherche des entreprises sur Google Maps, analyse leurs sites web
+et exporte les données dans un fichier Excel.
 
-Usage: python lead_generator.py
+Usage:
+    pip install -r requirements.txt
+    playwright install chromium
+    python lead_generator.py
 =============================================================================
 """
 
-import os
 import re
-import googlemaps
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
-from dotenv import load_dotenv
 from datetime import datetime
-
-# Charger les variables d'environnement
-load_dotenv()
+from urllib.parse import quote
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-TIMEOUT_REQUESTS = 10  # Timeout pour les requêtes HTTP
+TIMEOUT = 10000  # Timeout en ms pour Playwright
+SCROLL_PAUSE = 2  # Pause entre chaque scroll (secondes)
+MAX_SCROLLS = 20  # Nombre max de scrolls (plus = plus de résultats)
 
 
 # =============================================================================
-# FONCTIONS PRINCIPALES
+# SCRAPING GOOGLE MAPS
 # =============================================================================
 
-def rechercher_entreprises(activite: str, localisation: str, rayon_km: int = 10) -> list:
+def rechercher_entreprises(activite: str, localisation: str, max_resultats: int = 100) -> list:
     """
-    Recherche des entreprises sur Google Maps.
+    Scrape Google Maps pour trouver des entreprises.
 
     Args:
-        activite: Type d'entreprise (ex: "restaurant", "plombier")
-        localisation: Ville ou adresse (ex: "Paris, France")
-        rayon_km: Rayon de recherche en kilomètres
+        activite: Type d'entreprise (ex: "plombier")
+        localisation: Zone géographique (ex: "Lyon")
+        max_resultats: Nombre max de résultats à récupérer
 
     Returns:
-        Liste des entreprises trouvées avec leurs infos
+        Liste des entreprises avec leurs infos
     """
-    print(f"\n🔍 Recherche: '{activite}' à '{localisation}' (rayon: {rayon_km}km)")
+    print(f"\n🔍 Recherche: '{activite}' à '{localisation}'")
 
-    # Initialiser le client Google Maps
-    gmaps = googlemaps.Client(key=GOOGLE_API_KEY)
+    # Construire l'URL de recherche
+    query = quote(f"{activite} {localisation}")
+    url = f"https://www.google.com/maps/search/{query}"
 
-    # Géocoder la localisation pour obtenir les coordonnées
-    geocode = gmaps.geocode(localisation)
-    if not geocode:
-        print(f"❌ Localisation '{localisation}' non trouvée")
-        return []
+    entreprises = []
 
-    lat = geocode[0]["geometry"]["location"]["lat"]
-    lng = geocode[0]["geometry"]["location"]["lng"]
-    print(f"📍 Coordonnées: {lat}, {lng}")
+    with sync_playwright() as p:
+        # Lancer le navigateur
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-    # Rechercher les entreprises
-    resultats = []
-    next_page_token = None
+        print(f"🌐 Chargement de Google Maps...")
+        page.goto(url, timeout=30000)
 
-    while True:
-        # Requête Places API
-        if next_page_token:
-            import time
-            time.sleep(2)  # Attendre avant d'utiliser le token
-            response = gmaps.places_nearby(
-                location=(lat, lng),
-                radius=rayon_km * 1000,
-                keyword=activite,
-                page_token=next_page_token
-            )
-        else:
-            response = gmaps.places_nearby(
-                location=(lat, lng),
-                radius=rayon_km * 1000,
-                keyword=activite
-            )
+        # Accepter les cookies si demandé
+        try:
+            page.click("button:has-text('Tout accepter')", timeout=3000)
+        except:
+            pass  # Pas de popup cookies
 
-        # Traiter les résultats
-        for place in response.get("results", []):
-            # Obtenir les détails complets
-            details = gmaps.place(place["place_id"], fields=[
-                "name", "formatted_address", "formatted_phone_number",
-                "website", "rating", "user_ratings_total", "types"
-            ])["result"]
+        # Attendre que les résultats chargent
+        page.wait_for_selector("div[role='feed']", timeout=10000)
 
-            entreprise = {
-                "nom": details.get("name", "N/A"),
-                "adresse": details.get("formatted_address", "N/A"),
-                "telephone": details.get("formatted_phone_number", "N/A"),
-                "site_web": details.get("website", None),
-                "note": details.get("rating", "N/A"),
-                "nb_avis": details.get("user_ratings_total", 0),
-                "types": ", ".join(details.get("types", []))
-            }
+        print(f"📜 Scroll pour charger plus de résultats...")
 
-            resultats.append(entreprise)
-            print(f"  ✓ {entreprise['nom']}")
+        # Scroller pour charger plus de résultats
+        feed = page.query_selector("div[role='feed']")
+        previous_count = 0
 
-        # Pagination
-        next_page_token = response.get("next_page_token")
-        if not next_page_token:
-            break
+        for i in range(MAX_SCROLLS):
+            # Scroller dans le feed
+            feed.evaluate("el => el.scrollTop = el.scrollHeight")
+            page.wait_for_timeout(SCROLL_PAUSE * 1000)
 
-    print(f"\n✅ {len(resultats)} entreprises trouvées")
-    return resultats
+            # Compter les résultats actuels
+            items = page.query_selector_all("div[role='feed'] > div > div[jsaction]")
+            current_count = len(items)
 
+            print(f"  Scroll {i+1}/{MAX_SCROLLS} - {current_count} résultats")
+
+            # Arrêter si plus de nouveaux résultats ou max atteint
+            if current_count >= max_resultats or current_count == previous_count:
+                break
+            previous_count = current_count
+
+        # Extraire les données de chaque résultat
+        print(f"\n📊 Extraction des données...")
+        items = page.query_selector_all("div[role='feed'] > div > div[jsaction]")
+
+        for idx, item in enumerate(items[:max_resultats]):
+            try:
+                # Cliquer sur l'élément pour voir les détails
+                item.click()
+                page.wait_for_timeout(1500)
+
+                # Extraire les infos du panneau latéral
+                entreprise = extraire_details(page)
+
+                if entreprise and entreprise.get("nom"):
+                    entreprises.append(entreprise)
+                    print(f"  ✓ {entreprise['nom']}")
+
+            except Exception as e:
+                continue  # Passer au suivant si erreur
+
+        browser.close()
+
+    print(f"\n✅ {len(entreprises)} entreprises extraites")
+    return entreprises
+
+
+def extraire_details(page) -> dict:
+    """
+    Extrait les détails d'une entreprise depuis le panneau Google Maps.
+
+    Args:
+        page: Page Playwright
+
+    Returns:
+        Dictionnaire avec les infos de l'entreprise
+    """
+    entreprise = {
+        "nom": "",
+        "adresse": "",
+        "telephone": "",
+        "site_web": "",
+        "note": "",
+        "nb_avis": "",
+        "horaires": "",
+        "categorie": ""
+    }
+
+    try:
+        # Nom
+        nom_el = page.query_selector("h1")
+        if nom_el:
+            entreprise["nom"] = nom_el.inner_text().strip()
+
+        # Note et avis
+        note_el = page.query_selector("div.F7nice span[aria-hidden='true']")
+        if note_el:
+            entreprise["note"] = note_el.inner_text().strip()
+
+        avis_el = page.query_selector("div.F7nice span[aria-label*='avis']")
+        if avis_el:
+            avis_text = avis_el.get_attribute("aria-label")
+            nb = re.search(r"(\d+)", avis_text.replace(" ", ""))
+            if nb:
+                entreprise["nb_avis"] = nb.group(1)
+
+        # Catégorie
+        cat_el = page.query_selector("button[jsaction*='category']")
+        if cat_el:
+            entreprise["categorie"] = cat_el.inner_text().strip()
+
+        # Adresse, téléphone, site web via les boutons d'action
+        buttons = page.query_selector_all("button[data-item-id]")
+        for btn in buttons:
+            item_id = btn.get_attribute("data-item-id") or ""
+            aria = btn.get_attribute("aria-label") or ""
+
+            if "address" in item_id:
+                entreprise["adresse"] = aria.replace("Adresse:", "").strip()
+
+            elif "phone" in item_id:
+                entreprise["telephone"] = aria.replace("Téléphone:", "").strip()
+
+        # Site web (lien séparé)
+        site_el = page.query_selector("a[data-item-id='authority']")
+        if site_el:
+            entreprise["site_web"] = site_el.get_attribute("href")
+
+    except Exception as e:
+        pass  # Retourner ce qu'on a pu extraire
+
+    return entreprise
+
+
+# =============================================================================
+# ANALYSE DE SITE WEB
+# =============================================================================
 
 def analyser_site_web(url: str) -> dict:
     """
@@ -123,117 +200,106 @@ def analyser_site_web(url: str) -> dict:
     Returns:
         Dictionnaire avec points_forts et points_faibles
     """
-    print(f"  🌐 Analyse du site: {url}")
+    print(f"  🌐 Analyse: {url[:50]}...")
 
     points_forts = []
     points_faibles = []
 
     try:
-        # Récupérer le contenu du site
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; LeadBot/1.0)"}
-        response = requests.get(url, headers=headers, timeout=TIMEOUT_REQUESTS)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # === ANALYSE SEO ===
+        # === SEO ===
 
-        # 1. Balise title
+        # Titre
         title = soup.find("title")
         if title and len(title.text.strip()) > 10:
-            points_forts.append("Titre de page bien défini")
+            points_forts.append("Titre de page présent")
         else:
-            points_faibles.append("Titre de page manquant ou trop court")
+            points_faibles.append("Titre manquant ou trop court")
 
-        # 2. Meta description
+        # Meta description
         meta_desc = soup.find("meta", attrs={"name": "description"})
-        if meta_desc and meta_desc.get("content", ""):
+        if meta_desc and meta_desc.get("content"):
             points_forts.append("Meta description présente")
         else:
             points_faibles.append("Meta description manquante")
 
-        # 3. Balises H1
+        # H1
         h1_tags = soup.find_all("h1")
         if len(h1_tags) == 1:
-            points_forts.append("Une seule balise H1 (bonne pratique)")
+            points_forts.append("Structure H1 correcte")
         elif len(h1_tags) == 0:
-            points_faibles.append("Aucune balise H1")
+            points_faibles.append("Pas de balise H1")
         else:
-            points_faibles.append(f"Plusieurs balises H1 ({len(h1_tags)})")
+            points_faibles.append(f"Trop de H1 ({len(h1_tags)})")
 
-        # 4. Images avec alt
+        # Images alt
         images = soup.find_all("img")
-        images_avec_alt = [img for img in images if img.get("alt")]
         if images:
-            ratio_alt = len(images_avec_alt) / len(images)
-            if ratio_alt >= 0.8:
-                points_forts.append("Images bien optimisées (attributs alt)")
-            elif ratio_alt < 0.5:
-                points_faibles.append("Beaucoup d'images sans attribut alt")
+            avec_alt = len([i for i in images if i.get("alt")])
+            ratio = avec_alt / len(images)
+            if ratio >= 0.7:
+                points_forts.append("Images optimisées (alt)")
+            elif ratio < 0.3:
+                points_faibles.append("Images sans attribut alt")
 
-        # === ANALYSE CONTENU ===
+        # === CONTENU ===
 
-        # 5. Liens sociaux
-        social_patterns = ["facebook", "instagram", "twitter", "linkedin", "youtube"]
+        # Réseaux sociaux
+        social = ["facebook", "instagram", "twitter", "linkedin", "youtube"]
         liens = [a.get("href", "") for a in soup.find_all("a", href=True)]
-        liens_sociaux = [l for l in liens if any(s in l.lower() for s in social_patterns)]
-        if liens_sociaux:
-            points_forts.append(f"Présence sur les réseaux sociaux ({len(liens_sociaux)} liens)")
+        if any(s in " ".join(liens).lower() for s in social):
+            points_forts.append("Réseaux sociaux présents")
         else:
-            points_faibles.append("Aucun lien vers les réseaux sociaux")
+            points_faibles.append("Pas de réseaux sociaux")
 
-        # 6. Formulaire de contact
-        forms = soup.find_all("form")
-        if forms:
-            points_forts.append("Formulaire de contact présent")
+        # Formulaire
+        if soup.find("form"):
+            points_forts.append("Formulaire de contact")
         else:
-            points_faibles.append("Pas de formulaire de contact visible")
+            points_faibles.append("Pas de formulaire visible")
 
-        # 7. HTTPS
-        if url.startswith("https://"):
+        # === TECHNIQUE ===
+
+        # HTTPS
+        if url.startswith("https"):
             points_forts.append("Site sécurisé (HTTPS)")
         else:
-            points_faibles.append("Site non sécurisé (pas de HTTPS)")
+            points_faibles.append("Pas de HTTPS")
 
-        # 8. Numéro de téléphone visible
-        tel_pattern = r"(\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}"
-        page_text = soup.get_text()
-        if re.search(tel_pattern, page_text):
-            points_forts.append("Numéro de téléphone visible")
+        # Mobile
+        if soup.find("meta", attrs={"name": "viewport"}):
+            points_forts.append("Compatible mobile")
         else:
-            points_faibles.append("Numéro de téléphone non visible")
+            points_faibles.append("Non optimisé mobile")
 
-        # 9. Responsive (viewport meta)
-        viewport = soup.find("meta", attrs={"name": "viewport"})
-        if viewport:
-            points_forts.append("Site adapté mobile (viewport)")
-        else:
-            points_faibles.append("Site possiblement non adapté mobile")
-
-        # 10. Temps de chargement (approximatif)
+        # Vitesse
         if response.elapsed.total_seconds() < 2:
-            points_forts.append("Temps de réponse rapide")
+            points_forts.append("Chargement rapide")
         elif response.elapsed.total_seconds() > 5:
-            points_faibles.append("Temps de réponse lent")
+            points_faibles.append("Chargement lent")
 
-    except requests.RequestException as e:
-        points_faibles.append(f"Site inaccessible: {str(e)[:50]}")
     except Exception as e:
-        points_faibles.append(f"Erreur d'analyse: {str(e)[:50]}")
+        points_faibles.append(f"Site inaccessible")
 
-    return {
-        "points_forts": points_forts,
-        "points_faibles": points_faibles
-    }
+    return {"points_forts": points_forts, "points_faibles": points_faibles}
 
+
+# =============================================================================
+# EXPORT EXCEL
+# =============================================================================
 
 def exporter_excel(entreprises: list, nom_fichier: str = None) -> str:
     """
-    Exporte les données des entreprises dans un fichier Excel.
+    Exporte les leads dans un fichier Excel.
 
     Args:
-        entreprises: Liste des entreprises avec leurs données
-        nom_fichier: Nom du fichier (optionnel, généré automatiquement si absent)
+        entreprises: Liste des entreprises
+        nom_fichier: Nom du fichier (optionnel)
 
     Returns:
         Chemin du fichier créé
@@ -242,75 +308,69 @@ def exporter_excel(entreprises: list, nom_fichier: str = None) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         nom_fichier = f"leads_{timestamp}.xlsx"
 
-    print(f"\n📊 Export vers {nom_fichier}")
+    print(f"\n📊 Export: {nom_fichier}")
 
-    # Créer le classeur Excel
     wb = Workbook()
     ws = wb.active
     ws.title = "Leads"
 
     # En-têtes
-    headers = [
-        "Nom", "Adresse", "Téléphone", "Site Web",
-        "Note", "Nb Avis", "Points Forts", "Points Faibles"
-    ]
+    headers = ["Nom", "Catégorie", "Adresse", "Téléphone", "Site Web",
+               "Note", "Avis", "Points Forts", "Points Faibles"]
 
-    # Style des en-têtes
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 
-    for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=header)
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
         cell.font = header_font
         cell.fill = header_fill
 
     # Données
-    for row, ent in enumerate(entreprises, 2):
-        ws.cell(row=row, column=1, value=ent.get("nom", ""))
-        ws.cell(row=row, column=2, value=ent.get("adresse", ""))
-        ws.cell(row=row, column=3, value=ent.get("telephone", ""))
-        ws.cell(row=row, column=4, value=ent.get("site_web", ""))
-        ws.cell(row=row, column=5, value=ent.get("note", ""))
-        ws.cell(row=row, column=6, value=ent.get("nb_avis", ""))
+    for row, e in enumerate(entreprises, 2):
+        ws.cell(row=row, column=1, value=e.get("nom", ""))
+        ws.cell(row=row, column=2, value=e.get("categorie", ""))
+        ws.cell(row=row, column=3, value=e.get("adresse", ""))
+        ws.cell(row=row, column=4, value=e.get("telephone", ""))
+        ws.cell(row=row, column=5, value=e.get("site_web", ""))
+        ws.cell(row=row, column=6, value=e.get("note", ""))
+        ws.cell(row=row, column=7, value=e.get("nb_avis", ""))
 
-        # Points forts et faibles (si site analysé)
-        analyse = ent.get("analyse", {})
-        points_forts = "\n".join(analyse.get("points_forts", []))
-        points_faibles = "\n".join(analyse.get("points_faibles", []))
+        analyse = e.get("analyse", {})
+        ws.cell(row=row, column=8, value="\n".join(analyse.get("points_forts", [])))
+        ws.cell(row=row, column=9, value="\n".join(analyse.get("points_faibles", [])))
 
-        ws.cell(row=row, column=7, value=points_forts)
-        ws.cell(row=row, column=8, value=points_faibles)
+    # Largeur colonnes
+    for col, width in enumerate([25, 20, 40, 15, 35, 8, 10, 35, 35], 1):
+        ws.column_dimensions[chr(64 + col)].width = width
 
-    # Ajuster la largeur des colonnes
-    largeurs = [30, 50, 20, 40, 10, 10, 40, 40]
-    for col, largeur in enumerate(largeurs, 1):
-        ws.column_dimensions[chr(64 + col)].width = largeur
-
-    # Sauvegarder
     wb.save(nom_fichier)
     print(f"✅ Fichier créé: {nom_fichier}")
-
     return nom_fichier
 
 
-def generer_leads(activite: str, localisation: str, rayon_km: int = 10) -> str:
+# =============================================================================
+# FONCTION PRINCIPALE
+# =============================================================================
+
+def generer_leads(activite: str, localisation: str, max_resultats: int = 100) -> str:
     """
-    Fonction principale: génère des leads et les exporte en Excel.
+    Génère des leads et les exporte en Excel.
 
     Args:
-        activite: Type d'entreprise recherché
+        activite: Type d'entreprise
         localisation: Zone géographique
-        rayon_km: Rayon de recherche
+        max_resultats: Nombre max de leads
 
     Returns:
-        Chemin du fichier Excel généré
+        Chemin du fichier Excel
     """
     print("=" * 60)
     print("GENERATEUR DE LEADS GOOGLE MAPS")
     print("=" * 60)
 
-    # 1. Rechercher les entreprises
-    entreprises = rechercher_entreprises(activite, localisation, rayon_km)
+    # 1. Scraper Google Maps
+    entreprises = rechercher_entreprises(activite, localisation, max_resultats)
 
     if not entreprises:
         print("❌ Aucune entreprise trouvée")
@@ -318,14 +378,13 @@ def generer_leads(activite: str, localisation: str, rayon_km: int = 10) -> str:
 
     # 2. Analyser les sites web
     print("\n🔬 Analyse des sites web...")
-    for ent in entreprises:
-        if ent.get("site_web"):
-            ent["analyse"] = analyser_site_web(ent["site_web"])
+    for e in entreprises:
+        if e.get("site_web"):
+            e["analyse"] = analyser_site_web(e["site_web"])
         else:
-            ent["analyse"] = {"points_forts": [], "points_faibles": ["Pas de site web"]}
-            print(f"  ⚠️ {ent['nom']}: Pas de site web")
+            e["analyse"] = {"points_forts": [], "points_faibles": ["Pas de site web"]}
 
-    # 3. Exporter en Excel
+    # 3. Exporter
     fichier = exporter_excel(entreprises)
 
     print("\n" + "=" * 60)
@@ -340,23 +399,14 @@ def generer_leads(activite: str, localisation: str, rayon_km: int = 10) -> str:
 # =============================================================================
 
 if __name__ == "__main__":
-    # Vérifier la clé API
-    if not GOOGLE_API_KEY:
-        print("❌ ERREUR: Clé API Google manquante!")
-        print("   Créez un fichier .env avec: GOOGLE_API_KEY=votre_clé")
-        exit(1)
-
-    # Exemple d'utilisation
     print("\n" + "=" * 60)
-    print("CONFIGURATION DE LA RECHERCHE")
+    print("CONFIGURATION")
     print("=" * 60)
 
-    # Demander les paramètres à l'utilisateur
-    activite = input("\n📌 Type d'activité (ex: restaurant, plombier): ").strip()
-    localisation = input("📍 Localisation (ex: Paris, France): ").strip()
-    rayon = input("📏 Rayon en km (défaut: 10): ").strip()
+    activite = input("\n📌 Activité (ex: plombier, restaurant): ").strip()
+    localisation = input("📍 Localisation (ex: Lyon, Paris 15): ").strip()
+    max_res = input("📊 Nombre max de résultats (défaut: 100): ").strip()
 
-    rayon_km = int(rayon) if rayon.isdigit() else 10
+    max_resultats = int(max_res) if max_res.isdigit() else 100
 
-    # Lancer la génération
-    generer_leads(activite, localisation, rayon_km)
+    generer_leads(activite, localisation, max_resultats)
