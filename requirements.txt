@@ -1,9 +1,5 @@
 # Scraping Google Maps
 playwright==1.40.0
 
-# Analyse de sites web
-requests==2.31.0
-beautifulsoup4==4.12.2
-
 # Export Excel
 openpyxl==3.1.2
