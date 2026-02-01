@@ -113,19 +113,24 @@ def rechercher_entreprises(activite: str, localisation: str, max_resultats: int 
 
             try:
                 item.click()
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(2000)  # Attente pour charger les détails
 
                 entreprise = extraire_details(page)
 
-                if entreprise and entreprise.get("nom"):
-                    # Filtre sans site web si demandé
-                    if sans_site_uniquement and entreprise.get("site_web"):
-                        print(f"  ✗ {entreprise['nom']} (a un site web)")
-                        continue
+                # Validation: nom ET téléphone obligatoires
+                if not entreprise.get("nom") or not entreprise.get("telephone"):
+                    nom = entreprise.get("nom", "???")
+                    print(f"  ⚠ {nom} - données incomplètes (pas de tél)")
+                    continue
 
-                    entreprises.append(entreprise)
-                    status = "sans site" if not entreprise.get("site_web") else "avec site"
-                    print(f"  ✓ {entreprise['nom']} ({status})")
+                # Filtre sans site web si demandé
+                if sans_site_uniquement and entreprise.get("site_web"):
+                    print(f"  ✗ {entreprise['nom']} (a un site web)")
+                    continue
+
+                entreprises.append(entreprise)
+                status = "sans site" if not entreprise.get("site_web") else "avec site"
+                print(f"  ✓ {entreprise['nom']} | {entreprise['telephone']} ({status})")
 
             except:
                 continue
@@ -149,45 +154,89 @@ def extraire_details(page) -> dict:
     }
 
     try:
-        # Nom
-        nom_el = page.query_selector("h1")
-        if nom_el:
-            entreprise["nom"] = nom_el.inner_text().strip()
+        # Attendre que le panneau de détails charge
+        page.wait_for_selector("h1", timeout=5000)
 
-        # Note et avis
+        # === NOM (plusieurs sélecteurs) ===
+        for selector in ["h1.DUwDvf", "h1[class*='header']", "h1"]:
+            nom_el = page.query_selector(selector)
+            if nom_el:
+                nom = nom_el.inner_text().strip()
+                if nom and len(nom) > 1:
+                    entreprise["nom"] = nom
+                    break
+
+        # === NOTE ET AVIS ===
         note_el = page.query_selector("div.F7nice span[aria-hidden='true']")
         if note_el:
             entreprise["note"] = note_el.inner_text().strip()
 
-        avis_el = page.query_selector("div.F7nice span[aria-label*='avis']")
-        if avis_el:
-            avis_text = avis_el.get_attribute("aria-label")
-            nb = re.search(r"(\d+)", avis_text.replace(" ", ""))
-            if nb:
-                entreprise["nb_avis"] = nb.group(1)
+        # Chercher le nombre d'avis avec plusieurs patterns
+        avis_selectors = [
+            "div.F7nice span[aria-label*='avis']",
+            "span[aria-label*='review']",
+            "span[aria-label*='avis']"
+        ]
+        for sel in avis_selectors:
+            avis_el = page.query_selector(sel)
+            if avis_el:
+                avis_text = avis_el.get_attribute("aria-label") or ""
+                nb = re.search(r"(\d[\d\s]*)", avis_text.replace("\u202f", "").replace(" ", ""))
+                if nb:
+                    entreprise["nb_avis"] = nb.group(1).replace(" ", "")
+                    break
 
-        # Catégorie
+        # === CATEGORIE ===
         cat_el = page.query_selector("button[jsaction*='category']")
         if cat_el:
             entreprise["categorie"] = cat_el.inner_text().strip()
 
-        # Adresse et téléphone
+        # === ADRESSE, TELEPHONE, SITE WEB via les boutons ===
+        # Méthode 1: boutons avec data-item-id
         buttons = page.query_selector_all("button[data-item-id]")
         for btn in buttons:
             item_id = btn.get_attribute("data-item-id") or ""
             aria = btn.get_attribute("aria-label") or ""
 
-            if "address" in item_id:
-                entreprise["adresse"] = aria.replace("Adresse:", "").strip()
-            elif "phone" in item_id:
-                entreprise["telephone"] = aria.replace("Téléphone:", "").strip()
+            if "address" in item_id and not entreprise["adresse"]:
+                entreprise["adresse"] = aria.replace("Adresse:", "").replace("Address:", "").strip()
 
-        # Site web
-        site_el = page.query_selector("a[data-item-id='authority']")
-        if site_el:
-            entreprise["site_web"] = site_el.get_attribute("href")
+            elif "phone" in item_id and not entreprise["telephone"]:
+                # Extraire juste le numéro
+                tel = aria.replace("Téléphone:", "").replace("Phone:", "").strip()
+                entreprise["telephone"] = tel
 
-    except:
+        # Méthode 2: chercher le téléphone dans les liens/texte si pas trouvé
+        if not entreprise["telephone"]:
+            # Chercher un lien tel:
+            tel_link = page.query_selector("a[href^='tel:']")
+            if tel_link:
+                href = tel_link.get_attribute("href") or ""
+                entreprise["telephone"] = href.replace("tel:", "").strip()
+
+            # Ou chercher dans le texte avec regex
+            if not entreprise["telephone"]:
+                page_text = page.inner_text()
+                tel_match = re.search(r"(\+?\d{1,3}[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{2,4}[\s.-]?\d{0,4})", page_text)
+                if tel_match:
+                    entreprise["telephone"] = tel_match.group(1).strip()
+
+        # === SITE WEB ===
+        site_selectors = [
+            "a[data-item-id='authority']",
+            "a[aria-label*='site']",
+            "a[aria-label*='Site']",
+            "a[aria-label*='website']"
+        ]
+        for sel in site_selectors:
+            site_el = page.query_selector(sel)
+            if site_el:
+                href = site_el.get_attribute("href")
+                if href and "google" not in href:
+                    entreprise["site_web"] = href
+                    break
+
+    except Exception as e:
         pass
 
     return entreprise
