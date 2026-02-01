@@ -24,7 +24,7 @@ from urllib.parse import quote
 
 DEBUG = False  # Mettre True pour voir le navigateur
 SCROLL_PAUSE = 2  # Pause entre chaque scroll (secondes)
-MAX_SCROLLS = 20  # Nombre max de scrolls
+MAX_SCROLLS = 50  # Nombre max de scrolls (augmenté pour filtre sans site)
 
 
 # =============================================================================
@@ -84,56 +84,68 @@ def rechercher_entreprises(activite: str, localisation: str, max_resultats: int 
             browser.close()
             return []
 
-        print(f"📜 Scroll pour charger plus de résultats...")
+        print(f"📜 Scroll et extraction des données...")
 
-        # Scroller pour charger plus
         feed = page.query_selector("div[role='feed']")
-        previous_count = 0
+        items_traites = set()  # Pour ne pas traiter 2 fois le même
+        scroll_count = 0
+        no_new_count = 0  # Compteur si plus de nouveaux résultats
 
-        for i in range(MAX_SCROLLS):
-            feed.evaluate("el => el.scrollTop = el.scrollHeight")
-            page.wait_for_timeout(SCROLL_PAUSE * 1000)
-
+        while len(entreprises) < max_resultats and scroll_count < MAX_SCROLLS:
+            # Récupérer les items actuels
             items = page.query_selector_all("div[role='feed'] > div > div[jsaction]")
-            current_count = len(items)
 
-            print(f"  Scroll {i+1}/{MAX_SCROLLS} - {current_count} résultats")
+            nouveaux_trouves = False
 
-            if current_count >= max_resultats * 2 or current_count == previous_count:
-                break
-            previous_count = current_count
+            for idx, item in enumerate(items):
+                # Skip si déjà traité
+                item_id = f"item_{idx}"
+                if item_id in items_traites:
+                    continue
+                items_traites.add(item_id)
+                nouveaux_trouves = True
 
-        # Extraire les données
-        print(f"\n📊 Extraction des données...")
-        items = page.query_selector_all("div[role='feed'] > div > div[jsaction]")
+                if len(entreprises) >= max_resultats:
+                    break
 
-        for item in items:
-            if len(entreprises) >= max_resultats:
-                break
+                try:
+                    item.click()
+                    page.wait_for_timeout(2000)
 
-            try:
-                item.click()
-                page.wait_for_timeout(2000)  # Attente pour charger les détails
+                    entreprise = extraire_details(page)
 
-                entreprise = extraire_details(page)
+                    # Validation: nom ET téléphone obligatoires
+                    if not entreprise.get("nom") or not entreprise.get("telephone"):
+                        nom = entreprise.get("nom", "???")
+                        print(f"  ⚠ {nom} - pas de téléphone")
+                        continue
 
-                # Validation: nom ET téléphone obligatoires
-                if not entreprise.get("nom") or not entreprise.get("telephone"):
-                    nom = entreprise.get("nom", "???")
-                    print(f"  ⚠ {nom} - données incomplètes (pas de tél)")
+                    # Filtre sans site web si demandé
+                    if sans_site_uniquement and entreprise.get("site_web"):
+                        print(f"  ✗ {entreprise['nom']} (a un site)")
+                        continue
+
+                    entreprises.append(entreprise)
+                    print(f"  ✓ [{len(entreprises)}/{max_resultats}] {entreprise['nom']} | {entreprise['telephone']}")
+
+                except:
                     continue
 
-                # Filtre sans site web si demandé
-                if sans_site_uniquement and entreprise.get("site_web"):
-                    print(f"  ✗ {entreprise['nom']} (a un site web)")
-                    continue
+            # Scroller pour charger plus
+            if len(entreprises) < max_resultats:
+                feed.evaluate("el => el.scrollTop = el.scrollHeight")
+                page.wait_for_timeout(SCROLL_PAUSE * 1000)
+                scroll_count += 1
 
-                entreprises.append(entreprise)
-                status = "sans site" if not entreprise.get("site_web") else "avec site"
-                print(f"  ✓ {entreprise['nom']} | {entreprise['telephone']} ({status})")
+                if not nouveaux_trouves:
+                    no_new_count += 1
+                    if no_new_count >= 3:
+                        print(f"  ⚠ Plus de nouveaux résultats après {scroll_count} scrolls")
+                        break
+                else:
+                    no_new_count = 0
 
-            except:
-                continue
+                print(f"  📜 Scroll {scroll_count}/{MAX_SCROLLS} - {len(items)} items chargés, {len(entreprises)} leads trouvés")
 
         browser.close()
 
