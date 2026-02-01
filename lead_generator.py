@@ -86,7 +86,6 @@ def rechercher_entreprises(activite: str, localisation: str, max_resultats: int 
 
         print(f"📜 Scroll et extraction des données...")
 
-        feed = page.query_selector("div[role='feed']")
         items_traites = set()  # Pour ne pas traiter 2 fois le même
         scroll_count = 0
         no_new_count = 0  # Compteur si plus de nouveaux résultats
@@ -131,9 +130,9 @@ def rechercher_entreprises(activite: str, localisation: str, max_resultats: int 
                 except:
                     continue
 
-            # Scroller pour charger plus
+            # Scroller pour charger plus (re-sélectionner feed à chaque fois)
             if len(entreprises) < max_resultats:
-                feed.evaluate("el => el.scrollTop = el.scrollHeight")
+                page.evaluate("document.querySelector('div[role=\"feed\"]').scrollTop = document.querySelector('div[role=\"feed\"]').scrollHeight")
                 page.wait_for_timeout(SCROLL_PAUSE * 1000)
                 scroll_count += 1
 
