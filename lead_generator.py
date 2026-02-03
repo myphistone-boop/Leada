@@ -95,6 +95,7 @@ def rechercher_entreprises(recherche: str, max_resultats: int = 100, sans_site_u
         items_traites = set()  # Pour ne pas traiter 2 fois le même
         scroll_count = 0
         no_new_count = 0  # Compteur si plus de nouveaux résultats
+        skipped_avec_site = 0  # Compteur des skips rapides
 
         while len(entreprises) < max_resultats and scroll_count < MAX_SCROLLS:
             # Récupérer les items actuels
@@ -114,6 +115,22 @@ def rechercher_entreprises(recherche: str, max_resultats: int = 100, sans_site_u
                     break
 
                 try:
+                    # === PRE-FILTRE RAPIDE : détecter site web sans cliquer ===
+                    if sans_site_uniquement:
+                        item_html = item.inner_html().lower()
+                        # Chercher des indices de site web dans le HTML de l'item
+                        has_website = any(indicator in item_html for indicator in [
+                            'site web', 'website', 'siteweb',
+                            'data-item-id="authority"',
+                            'aria-label="site'
+                        ])
+                        if has_website:
+                            skipped_avec_site += 1
+                            if skipped_avec_site % 10 == 0:
+                                print(f"  ⏭ {skipped_avec_site} entreprises avec site ignorées (rapide)")
+                            continue
+
+                    # Cliquer pour obtenir les détails
                     item.click()
                     page.wait_for_timeout(2000)
 
@@ -125,7 +142,7 @@ def rechercher_entreprises(recherche: str, max_resultats: int = 100, sans_site_u
                         print(f"  ⚠ {nom} - pas de téléphone")
                         continue
 
-                    # Filtre sans site web si demandé
+                    # Filtre sans site web (double vérification après clic)
                     if sans_site_uniquement and entreprise.get("site_web"):
                         print(f"  ✗ {entreprise['nom']} (a un site)")
                         continue
@@ -150,9 +167,12 @@ def rechercher_entreprises(recherche: str, max_resultats: int = 100, sans_site_u
                 else:
                     no_new_count = 0
 
-                print(f"  📜 Scroll {scroll_count}/{MAX_SCROLLS} - {len(items)} items chargés, {len(entreprises)} leads trouvés")
+                print(f"  📜 Scroll {scroll_count}/{MAX_SCROLLS} - {len(items)} items, {len(entreprises)} leads, {skipped_avec_site} skippés")
 
         browser.close()
+
+    if skipped_avec_site > 0:
+        print(f"⏭ Total ignorés (avec site): {skipped_avec_site}")
 
     print(f"\n✅ {len(entreprises)} entreprises extraites")
     return entreprises
