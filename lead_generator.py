@@ -55,9 +55,16 @@ def rechercher_entreprises(activite: str, localisation: str, max_resultats: int 
     entreprises = []
 
     with sync_playwright() as p:
-        # Lancer le navigateur
-        browser = p.chromium.launch(headless=not DEBUG)
-        page = browser.new_page()
+        # Lancer le navigateur (avec options pour environnement entreprise)
+        browser = p.chromium.launch(
+            headless=not DEBUG,
+            args=[
+                '--ignore-certificate-errors',
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox'
+            ]
+        )
+        page = browser.new_page(ignore_https_errors=True)
 
         print(f"🌐 Chargement de Google Maps...")
         page.goto(url, timeout=60000)
