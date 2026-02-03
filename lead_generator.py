@@ -31,25 +31,24 @@ MAX_SCROLLS = 50  # Nombre max de scrolls (augmenté pour filtre sans site)
 # SCRAPING GOOGLE MAPS
 # =============================================================================
 
-def rechercher_entreprises(activite: str, localisation: str, max_resultats: int = 100, sans_site_uniquement: bool = False) -> list:
+def rechercher_entreprises(recherche: str, max_resultats: int = 100, sans_site_uniquement: bool = False) -> list:
     """
     Scrape Google Maps pour trouver des entreprises.
 
     Args:
-        activite: Type d'entreprise (ex: "plombier")
-        localisation: Zone géographique (ex: "Lyon")
+        recherche: Recherche Google Maps (ex: "Electricien Lyon")
         max_resultats: Nombre max de résultats
         sans_site_uniquement: Si True, garde uniquement les entreprises sans site web
 
     Returns:
         Liste des entreprises avec leurs infos
     """
-    print(f"\n🔍 Recherche: '{activite}' à '{localisation}'")
+    print(f"\n🔍 Recherche: '{recherche}'")
     if sans_site_uniquement:
         print(f"🎯 Filtre: entreprises SANS site web uniquement")
 
     # Construire l'URL de recherche
-    query = quote(f"{activite} {localisation}")
+    query = quote(recherche)
     url = f"https://www.google.com/maps/search/{query}"
 
     entreprises = []
@@ -310,14 +309,14 @@ def exporter_excel(entreprises: list, nom_fichier: str = None) -> str:
 # FONCTION PRINCIPALE
 # =============================================================================
 
-def generer_leads(activite: str, localisation: str, max_resultats: int = 100, sans_site_uniquement: bool = False) -> str:
+def generer_leads(recherche: str, max_resultats: int = 100, sans_site_uniquement: bool = False) -> str:
     """Génère des leads et les exporte en Excel."""
     print("=" * 60)
     print("GENERATEUR DE LEADS GOOGLE MAPS")
     print("=" * 60)
 
     # Scraper Google Maps
-    entreprises = rechercher_entreprises(activite, localisation, max_resultats, sans_site_uniquement)
+    entreprises = rechercher_entreprises(recherche, max_resultats, sans_site_uniquement)
 
     if not entreprises:
         print("❌ Aucune entreprise trouvée")
@@ -342,8 +341,7 @@ if __name__ == "__main__":
     print("CONFIGURATION")
     print("=" * 60)
 
-    activite = input("\n📌 Activité (ex: plombier, restaurant): ").strip()
-    localisation = input("📍 Localisation (ex: Lyon, Paris 15): ").strip()
+    recherche = input("\n📌 Recherche (ex: Electricien Lyon): ").strip()
 
     # Option sans site web
     sans_site = input("🚫 Uniquement les entreprises SANS site web ? (o/N): ").strip().lower()
@@ -352,4 +350,4 @@ if __name__ == "__main__":
     max_res = input("📊 Nombre max de résultats (défaut: 100): ").strip()
     max_resultats = int(max_res) if max_res.isdigit() else 100
 
-    generer_leads(activite, localisation, max_resultats, sans_site_uniquement)
+    generer_leads(recherche, max_resultats, sans_site_uniquement)
